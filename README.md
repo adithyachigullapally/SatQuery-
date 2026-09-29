@@ -1,104 +1,197 @@
-# SatQuery AI
+<div align="center">
 
-Agentic remote-sensing analysis. You upload one or two satellite images and ask
-a question in plain English; an LLM controller picks the right tool from five,
-runs it, and answers from what the tool measured — with the execution trace,
-the visual evidence and a PDF report attached.
+# 🛰️ SatQuery AI
 
-## Run it
+**Ask questions about satellite images in plain English.**
 
-```bash
-venv/Scripts/python.exe -m uvicorn backend.main:app --reload
-```
+Upload an image, type a question like *"what changed here?"* or *"how much of this is forest?"*,
+and get a measured answer with a highlighted map and a PDF report.
 
-Then open <http://127.0.0.1:8000/>. The API docs are at `/docs`.
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)
+![Hugging Face](https://img.shields.io/badge/Moondream2-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)
+![Free tier](https://img.shields.io/badge/Cost-Free%20tier%20only-2ea44f?style=for-the-badge)
 
-First analyze call loads Moondream2 onto the GPU (~8s, 4.4GB VRAM); every call
-after that is fast.
+</div>
 
-## What answers what
+---
 
-| Query shape | Tool | How it answers |
+## ✨ What it does
+
+You give it **one or two satellite images** and a **question**. SatQuery picks the right tool,
+runs it on the actual pixels, and tells you what it found.
+
+| 💬 You ask | 🔧 What runs | 📦 What you get |
 |---|---|---|
-| "What land cover is visible?" | `run_vqa` | Moondream2 |
-| "Describe this scene." | `run_caption` | Moondream2 |
-| "How much of this is trees?" | `run_land_cover` | Excess Green / NDVI + water index, % and hectares |
-| "Highlight the buildings." | `run_grounding` | Moondream2 pointing, boxes drawn on the image |
-| "What changed between these dates?" | `run_change_analysis` | histogram-matched change-vector analysis, 3σ outlier mask |
-| "How much of this is water?" (optical + SAR) | `run_fusion_analysis` | NDVI/NDWI vs Sentinel-1 VV backscatter, agreement and disagreement |
+| *"Describe this scene."* | Vision model (Moondream2) | A short description |
+| *"What land cover is visible?"* | Vision model (Moondream2) | A direct answer |
+| *"Highlight the buildings."* | Vision model pointing | Boxes drawn on the image |
+| *"How much of this is trees?"* | Land-cover measurement | % of the image and area in hectares |
+| *"What changed between these dates?"* | Change detection (2 images) | A change map and the % changed |
+| *"How much is water?"* (optical + radar) | Optical + radar fusion | Where both sensors agree and disagree |
 
-Moondream2 carries a LoRA adapter trained on BigEarthNet land-cover captions
-(`backend/models/final_adapter`, loaded automatically). On 20 held-out
-Sentinel-2 patches it lifts the CORINE label-set F1 from **0.000 to 0.387** —
-the base model sees the scene fine but answers "grass and dirt" instead of
-"broad-leaved forest, complex cultivation patterns". `LORA_ALPHA` in
-`backend/tools/vlm.py` dials how hard the adapter pushes; the measured
-trade-off against general captioning is documented there.
+Every answer comes with:
 
-Areas in hectares need the ground sample distance. A GeoTIFF states it and it
-is read automatically; for a PNG or JPEG, fill in the "metres per pixel" field
-(LEVIR-CD is 0.5). Without it the tool reports percentages and says why, rather
-than inventing a scale.
+- ✅ **The answer** in 2–4 plain sentences
+- 🗺️ **A picture** with the findings drawn on it
+- 🔍 **The steps that ran**, so you can see how it got there
+- 📊 **A confidence score** with its maths shown
+- 📄 **A one-page PDF report** you can download
 
-The three measurement tools are deterministic — no model in the measurement path,
-so the numbers reproduce exactly. The LLM classifies the query and narrates the
-result; it never invents a figure.
+---
 
-## Layout
+## 🧠 How it works
 
-```
-backend/
-  main.py          FastAPI: /api/health, /api/analyze, /api/report/{job_id}
-  validator.py     format/size/CRS checks, modality and pair-type inference
-  report.py        one-page PDF per job
-  config.py        .env + the provider table
-  agent/
-    llm_client.py  three brains behind one OpenAI-compatible client, with failover
-    tool_schemas.py  the five tools
-    controller.py  the agentic loop, execution trace, confidence
-  tools/
-    vlm.py             Moondream2: VQA, captioning, grounding
-    change_analysis.py bi-temporal change detection
-    land_cover.py      single-image land-cover area measurement
-    fusion_analysis.py optical + SAR fusion
-frontend/index.html    single-file UI, served at /
-training/prepare_bigearthnet.py   pulls S1/S2 pairs out of the Hub zip by range read
-sample_data/           LEVIR-CD pairs + BigEarthNet S1/S2 patches
-runs/<job_id>/         uploads, overlays, result.json, report PDF
-weights/moondream2/    model weights (not committed)
+```mermaid
+flowchart LR
+    A["🛰️ Images<br/>+ question"] --> B["🛡️ Validator<br/>checks the files"]
+    B --> C["🤖 LLM router<br/>Groq → Mistral → Gemini"]
+    C -->|picks a tool| D["⚙️ Tool runs<br/>on the pixels"]
+    D --> E["✍️ LLM writes<br/>the answer"]
+    E --> F["📄 Answer, map,<br/>trace and PDF"]
 ```
 
-## Checks
+> [!IMPORTANT]
+> **The AI never makes up a number.**
+> The language model only does two things: it picks which tool to run, and it writes the final sentence.
+> Every number comes from plain maths on the pixels, so the same image always gives the same result.
+
+If one LLM provider is down or out of free quota, it switches to the next one. If all three are down,
+a simple keyword router takes over so the app keeps working.
+
+---
+
+## 📈 Results
+
+| What we measured | Result |
+|---|---|
+| 🎯 Satellite vocabulary after fine-tuning (label F1 on 20 held-out BigEarthNet patches) | **0.000 → 0.387** |
+| ⏱️ Fine-tuning time (LoRA, 2 epochs, RTX 4060 laptop) | **~12 minutes** |
+| 💾 GPU memory to run the vision model | **4.4 GB** |
+| 🧩 LoRA adapter size | **4.7 MB** |
+
+Before fine-tuning, Moondream2 described satellite scenes as *"grass and dirt"*.
+After, it uses proper land-cover terms like *"broad-leaved forest"* and *"complex cultivation patterns"*.
+
+---
+
+## 🚀 Quick start
+
+**You need:** Python, an NVIDIA GPU with 6 GB or more (it also runs on CPU, just slower), and free API keys from
+[Groq](https://console.groq.com), [Mistral](https://console.mistral.ai), [Google AI Studio](https://aistudio.google.com) and [Hugging Face](https://huggingface.co).
+
+**1. Get the code and install packages**
 
 ```bash
-venv/Scripts/python.exe backend/validator.py            # validation rules
-venv/Scripts/python.exe -m backend.tools.change_analysis  # vs LEVIR-CD ground truth
-venv/Scripts/python.exe -m backend.tools.fusion_analysis  # synthetic + real S1/S2
-venv/Scripts/python.exe -m backend.tools.land_cover     # area arithmetic on a known scene
-venv/Scripts/python.exe -m backend.tools.vlm            # loads the GPU model
-venv/Scripts/python.exe -m backend.agent.controller     # routing, offline
-venv/Scripts/python.exe -m backend.report               # PDF renders
-venv/Scripts/python.exe -m tests.test_pipeline          # HTTP end to end, no GPU
-venv/Scripts/python.exe -m tests.test_matrix            # all 5 task types, live
-venv/Scripts/python.exe -m tests.test_domain_adaptation   # LoRA label F1 on held-out patches
-venv/Scripts/python.exe -m training.lora_finetune --smoke # training loop, loss must fall
-venv/Scripts/python.exe tests/check_providers.py        # the three brains
+git clone https://github.com/adithyachigullapally/SatQuery-.git
+cd SatQuery-
+python -m venv venv
+venv\Scripts\activate          # on Mac/Linux: source venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements.txt
 ```
 
-`tests/test_matrix.py` is the pre-demo check: it costs GPU time and free-tier
-quota, and it is the one that proves every mandatory requirement.
+**2. Add your API keys**
 
-## Setup notes
+Copy `.env.example` to `backend/.env` and fill in your keys.
 
-- `backend/.env` holds `GROQ_API_KEY`, `MISTRAL_API_KEY`, `GEMINI_API_KEY`,
-  `HF_TOKEN`, `AGENT_PROVIDER_ORDER`. Never committed.
-- torch comes from the CUDA index, separately from `requirements.txt`:
-  `pip install torch --index-url https://download.pytorch.org/whl/cu124`
-- Model weights: `snapshot_download('vikhyatk/moondream2', revision='2025-06-21',
-  local_dir='weights/moondream2')` — `local_dir` avoids the HF cache's symlinks,
-  which Windows refuses without Developer Mode.
-- Sample data: LEVIR-CD pairs are already in `sample_data/levir_cd/`;
-  `python -m training.prepare_bigearthnet 12` fetches the S1/S2 patches and
-  `python -m training.prepare_bigearthnet train 300` builds the LoRA training set.
-- Re-running the fine-tune: `python -m training.lora_finetune --epochs 2`
-  (~12 minutes, 5.7GB peak on the 4060 — Kaggle is not needed).
+**3. Download the vision model** (about 4 GB)
+
+```bash
+python -c "from huggingface_hub import snapshot_download; snapshot_download('vikhyatk/moondream2', revision='2025-06-21', local_dir='weights/moondream2')"
+```
+
+**4. Run it**
+
+```bash
+python -m uvicorn backend.main:app --reload
+```
+
+Open **http://127.0.0.1:8000** and upload an image. 🎉
+
+> [!TIP]
+> The first question takes about 8 seconds while the model loads onto the GPU. After that it's fast.
+> For hectares, upload a GeoTIFF, or type the metres-per-pixel value for a PNG/JPEG.
+
+---
+
+## 📁 Project structure
+
+```
+SatQuery-/
+├── backend/
+│   ├── main.py            → web server (FastAPI)
+│   ├── validator.py       → checks uploaded images
+│   ├── report.py          → makes the PDF
+│   ├── agent/             → the LLM router and the loop
+│   ├── tools/             → the tools that measure the images
+│   └── models/            → the fine-tuned LoRA adapter
+├── frontend/index.html    → the whole web interface
+├── training/              → data download and fine-tuning scripts
+└── tests/                 → checks for every part
+```
+
+📖 Want the full story? **[HOW_THIS_PROJECT_WORKS.md](HOW_THIS_PROJECT_WORKS.md)** explains every file and every formula in plain words.
+
+---
+
+## 🧪 Running the checks
+
+```bash
+python -m tests.test_pipeline      # full request, no GPU needed
+python -m tests.test_matrix        # every task type, live (uses GPU + API quota)
+```
+
+<details>
+<summary>All checks</summary>
+
+```bash
+python backend/validator.py                 # image validation rules
+python -m backend.tools.change_analysis     # against LEVIR-CD ground truth
+python -m backend.tools.fusion_analysis     # optical + radar on real data
+python -m backend.tools.land_cover          # area maths on a known scene
+python -m backend.tools.vlm                 # loads the vision model
+python -m backend.agent.controller          # routing, offline
+python -m backend.report                    # PDF renders
+python -m tests.test_domain_adaptation      # LoRA F1 on held-out patches
+python -m training.lora_finetune --smoke    # training loss must fall
+python tests/check_providers.py             # all three LLM providers
+```
+
+</details>
+
+<details>
+<summary>Sample data and re-training</summary>
+
+```bash
+python -m training.prepare_bigearthnet 12          # fetch optical + radar sample patches
+python -m training.prepare_bigearthnet train 300   # build the LoRA training set
+python -m training.lora_finetune --epochs 2        # re-train the adapter (~12 min)
+```
+
+</details>
+
+---
+
+## ⚠️ Known limitations
+
+- **Change detection is simple.** It doesn't use a trained model, so it scores low overlap
+  (IoU about 0.1–0.25) against LEVIR-CD ground truth and can miss large new buildings.
+- **No infrared band means no water estimate.** With plain RGB images, dark water, dark roofs and shadows look the same.
+- **No resolution means no hectares.** The app reports percentages and says why, instead of guessing.
+- **Radar and optical thresholds are tuned for Sentinel-1/2.** Other satellites need new values.
+- **Built for a hackathon demo.** There is no login, and the API is open to any website.
+
+---
+
+## 🛠️ Built with
+
+| Part | Tool |
+|---|---|
+| Web server | FastAPI |
+| Vision model | Moondream2 + our own LoRA adapter (PEFT) |
+| LLM router | Groq, Mistral, Gemini (free tiers) |
+| Image maths | NumPy, scikit-image, rasterio |
+| PDF reports | fpdf2 |
+| Datasets | BigEarthNet (Sentinel-1/2), LEVIR-CD |
